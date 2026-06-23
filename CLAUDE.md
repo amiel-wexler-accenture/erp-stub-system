@@ -1,0 +1,219 @@
+- 
+- Three fully independent services. No shared database, no shared code, no shared state. They are as separate as real SAP ECC and S/4HANA would be.
+- 
+- ### Tech Stack
+- - *Backend*: Python 3.11+, FastAPI, SQLAlchemy 2.0 (async), asyncpg, PostgreSQL 16
+- - *Frontend*: React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack Query + Table, React Router v6
+- - *Infrastructure*: Docker, docker-compose (5 services: 2 APIs + 2 DBs + 1 frontend)
+- - *Seed Data*: Faker library, deterministic seeding (seed=42)
+- - *Auth*: Bearer token per server
+- 
+- ---
+- 
+- ## Server 1: Legacy ERP Server
+- 
+- ### Persona
+- This server pretends to be an old, clunky ERP system. Think of it as the system that's been running for 15+ years, accumulating data debt. It is READ-ONLY — you can only extract data from it.
+- 
+- ### Endpoints
+- 
+- | Method | Path | Purpose |
+- |--------|------|---------|
+- | GET | /health | Health check (no auth) |
+- | GET | /system/info | System metadata (type, version, table count, record count) |
+- | GET | /tables | List all tables with names, domains, record counts, PKs |
+- | GET | /tables/{name}/schema | Column definitions with types, nullability, descriptions, sample values |
+- | GET | /tables/{name}/relationships | Foreign key relationships to other tables |
+- | GET | /tables/{name}/data | Paginated data extraction. Params: limit (default 500), offset (default 0), since (ISO timestamp for incremental extraction) |
+- | GET | /tables/{name}/count | Row count for reconciliation |
+- | GET | /config/profiles | List available ERP personas |
+- | POST | /config/profiles/{id}/activate | Switch persona (drops all tables, reseeds DB with new schema/data) |
+- 
+- ### Data Model (SAP ECC Profile — Default)
+- 
+- Five functional domains, mirroring real SAP:
+- 
+- *Vendor Master* (6 tables, ~13,500 rows total): LFA1 (general), LFB1 (company code), LFBK (bank details), LFAS (purchasing org), LFM1 (purchasing), LFM2 (purchasing-material). Compound keys: MANDT + LIFNR + organizational keys.
+- 
+- *Customer Master* (4 tables, ~9,500 rows): KNA1 (general), KNB1 (company code), KNVV (sales), KNBK (bank details). Same compound key pattern.
+- 
+- *Material Master* (3 tables, ~10,000 rows): MARA (general), MARC (plant-level), MAKT (descriptions). Key: MANDT + MATNR + organizational keys.
+- 
+- *Finance* (3 tables, ~1,200 rows): SKA1 (GL accounts), SKAT (descriptions), CSKS (cost centers).
+- 
+- *Purchasing* (2 tables, ~20,000 rows): EKKO (PO headers), EKPO (PO line items). High volume, references vendors and materials.
+- 
+- ### Data Quality Issues (CRITICAL — this is the whole point)
+- 
+- The seed data generator MUST deliberately introduce these problems. Without them, the migration demo has no drama:
+- 
+- 1. *Trailing spaces* (~20% of string fields): "ACME Corp   " — target system will reject these
+- 2. *Inconsistent nulls*: Mix of SQL NULL, empty string "", and literal "N/A" — all mean "missing" but look different
+- 3. *Near-duplicate records* (~2%): Same company name with slight address variation — needs deduplication
+- 4. *Orphan foreign keys* (~1%): Child records pointing to non-existent parents — referential integrity violations
+- 5. *Invalid codes* (~3%): Values not in any valid code list — target validation will catch these
+- 6. *Dates as strings*: "20180315" or "15.03.2018" instead of proper timestamps — needs parsing and conversion
+- 7. *Unicode edge cases*: Names with ü, é, ñ, 日本 — tests encoding handling
+- 8. *Blocked/deleted markers* (~5%): LOEVM="X" means "marked for deletion" — must be filtered out, not migrated
+- 9. *Wrong client values*: A few records with MANDT="200" mixed into MANDT="100" data — partition key contamination
+- 10. *Leading-zero padded IDs*: LIFNR="0000001234" — must match exactly when joining across systems
+- 
+- ### Profile Switching
+- 
+- When a profile is activated, the server:
+- 1. Drops ALL existing tables in PostgreSQL (TRUNCATE CASCADE or DROP/CREATE)
+- 2. Creates new tables matching the profile's schema (different table names, column names, types)
+- 3. Seeds with fresh synthetic data matching the profile's conventions
+- 4. Returns the new table inventory
+- 
+- The API contract (endpoints, response shapes) stays identical — only the data model changes.
+- 
+- *Oracle EBS profile*: Tables named AP_SUPPLIERS, AR_CUSTOMERS, MTL_SYSTEM_ITEMS_B, PO_HEADERS_ALL, GL_CODE_COMBINATIONS. Sequence-based integer IDs. Oracle column naming (VENDOR_ID, CREATION_DATE, ORG_ID).
+- 
+- *Dynamics AX profile*: Tables named VendTable, CustTable, InventTable, PurchTable, LedgerTable. PascalCase columns (AccountNum, VendGroup, DataAreaId). UUID RecId columns.
+- 
+- *Generic Legacy profile*: Simple English names (vendors, customers, materials, purchase_orders). Snake_case columns. Straightforward schema for non-ERP-specific demos.
+- 
+- ---
+- 
+- ## Server 2: Modern ERP Server
+- 
+- ### Persona
+- This server pretends to be a modern, cloud-ready ERP system. Clean data model, strict validation, proper types. It supports both reading (for reconciliation) AND writing (for loading migrated data).
+- 
+- ### Endpoints
+- 
+- | Method | Path | Purpose |
+- |--------|------|---------|
+- | GET | /health | Health check (no auth) |
+- | GET | /system/info | System metadata including api_version, supports_validation, max_batch_size |
+- | GET | /tables | List all tables with load/validation support flags |
+- | GET | /tables/{name}/schema | Column definitions WITH validation rules per column |
+- | GET | /tables/{name}/relationships | FK relationships |
+- | GET | /tables/{name}/data | Paginated data read (for reconciliation) |
+- | GET | /tables/{name}/count | Row count |
+- | POST | /tables/{name}/validate | Validate a batch of records against target rules. Returns per-record pass/fail with detailed error messages. Does NOT insert anything. |
+- | POST | /tables/{name}/load | Load validated records into the target. Supports modes: insert, upsert, update_only. Returns batch_id with load results. |
+- | GET | /tables/{name}/load-status/{batch_id} | Check status of a load batch |
+- | GET | /tables/{name}/load-history | List recent load operations |
+- | DELETE | /tables/{name}/data | Reset table to seed state (for demo reruns) |
+- | POST | /admin/reset | Reset entire database to seed state |
+- | GET | /config/profiles | List target profiles |
+- | POST | /config/profiles/{id}/activate | Switch target persona |
+- 
+- ### Data Model (S/4HANA Profile — Default)
+- 
+- The key conceptual change: *Business Partner*. In the modern system, vendors and customers are unified into a single BusinessPartner entity with role assignments (VEND, CUST, BOTH). This is the single biggest transformation challenge in SAP migrations.
+- 
+- *Business Partner* (6 tables, ~1,080 rows): BusinessPartner (master), BPRole, BPBankAccount, BPAddress, BPCompanyCode, BPPurchasingOrg.
+- 
+- *Product* (3 tables, ~800 rows): Product (master), ProductPlant, ProductValuation. Clean naming, proper types.
+- 
+- *Finance* (3 tables, ~180 rows): GLAccount, CostCenter, ProfitCenter.
+- 
+- *Purchasing* (2 tables, ~400 rows): PurchaseOrder, PurchaseOrderItem. FK references to BusinessPartner and Product.
+- 
+- *Reference tables* (6 tables): Country (249 ISO codes), Currency (180 ISO codes), UnitOfMeasure, CompanyCode, Plant, PurchasingOrganization. These enforce referential integrity during validation.
+- 
+- ### Validation Engine
+- 
+- The POST /validate endpoint is crucial for the demo. It must implement real validation logic:
+- 
+- - *Required fields*: Error if null/empty on non-nullable columns
+- - *Pattern matching*: BP number must match ^[0-9]{10}$
+- - *Allowed values*: bp_type must be VEND/CUST/BOTH
+- - *ISO standards*: Country and currency codes checked against reference tables
+- - *FK integrity*: Referenced records must exist in PostgreSQL
+- - *Unique constraints*: No duplicate PKs
+- - *String hygiene*: No trailing spaces or control characters
+- - *Date reasonableness*: Not in the far future
+- - *Cross-field rules*: If bp_type=VEND, purchasing data expected
+- 
+- The response must include per-record results with error/warning details, plus a summary with counts by rule and by column. This feeds directly into FloX's data quality dashboards.
+- 
+- ### Load Engine
+- 
+- The POST /load endpoint simulates actual data loading:
+- - *insert*: Fail on duplicate PK
+- - *upsert*: Insert or update on PK match (most common for migrations)
+- - *update_only*: Fail if PK doesn't exist
+- - *on_error modes*: reject_record (skip bad ones), reject_batch (all or nothing), log_and_continue
+- 
+- Load results are stored in a load_history table for querying via /load-history.
+- 
+- ### Pre-Seeded State
+- 
+- The modern server starts with ~500 existing records across tables. This simulates a partially migrated state where some data has already been loaded in a previous migration cycle. ~10% of legacy records should match these existing records by name/tax_id — testing deduplication and upsert logic.
+- 
+- ---
+- 
+- ## ERP Admin UI (React Frontend)
+- 
+- ### Purpose
+- A lightweight web frontend that makes the two API servers look and feel like real ERP systems during demos. When presenting to stakeholders, showing a proper UI with tables, badges, and color-coded data is far more convincing than raw JSON.
+- 
+- *This is NOT the product* — FloX (the Foundry app) is the product. This frontend just provides the "before" and "after" visuals.
+- 
+- ### Design Approach
+- - *Split personality*: Legacy side uses amber/orange theming (old, warning-ish). Modern side uses blue/green (clean, fresh).
+- - *Read-heavy*: Mostly browsing tables, viewing schemas, checking data. The load operations view is read-only status tracking.
+- - *Professional but simple*: shadcn/ui components give a clean modern look without building a full design system.
+- - *Demo-optimized*: Looks good on a projected 1920x1080 screen. Key numbers are big. Data quality issues are visually highlighted.
+- 
+- ### Pages
+- 
+- *Home (/)*: Side-by-side overview of both systems — name, type, version, table count, record count, active profile. Visual emphasis on the "gap" between messy source and clean target.
+- 
+- *Legacy Dashboard (/legacy)*: System info card, profile switcher, table list grouped by domain. Each table shows name, description, record count. Click to explore.
+- 
+- *Legacy Table Explorer (/legacy/tables/:name)*: Tabbed view — Schema (columns with types/descriptions), Data (paginated grid with data quality highlighting), Relationships (FK list). Visual callouts for data issues: trailing space cells get amber dot markers, NULLs shown as grey badges, blocked/deleted rows in red.
+- 
+- *Modern Dashboard (/modern)*: Same layout with blue theme. Additional "Recent Loads" section.
+- 
+- *Modern Table Explorer (/modern/tables/:name)*: Schema tab shows validation rules as colored badges per column. Data tab is clean. Load History tab shows batch operations.
+- 
+- *Load Manager (/load-manager)*: Cross-table view of all load batches with status badges (completed/partial/failed), drill-down to see rejected records and error details.
+- 
+- *Config (/config)*: Profile switchers for both systems, reset buttons, connection health indicators.
+- 
+- ### Tech Stack
+- React 18, TypeScript, Vite, styled div for componeents, legend state, shadcn/ui, TanStack Query (data fetching/caching), TanStack Table (data grids), React Router v6, Lucide React (icons), Axios (HTTP client).
+- 
+- ---
+- 
+- ## Infrastructure
+- 
+- ### Docker Compose — 5 Services
+- 
+- | Service | Image | Port | Purpose |
+- |---------|-------|------|---------|
+- | legacy-db | postgres:16-alpine | 5433 | Legacy ERP database |
+- | modern-db | postgres:16-alpine | 5434 | Modern ERP database |
+- | legacy-erp | Custom (FastAPI) | 8001 | Legacy ERP API server |
+- | modern-erp | Custom (FastAPI) | 8002 | Modern ERP API server |
+- | erp-admin-ui | Custom (React + nginx) | 3000 | Frontend |
+- 
+- API servers depend on their respective DBs (healthcheck-gated). Frontend depends on both API servers.
+- 
+- ### Seed Data
+- - Use Faker with mixed locales (en_US, en_GB, de_DE, fr_FR, ja_JP, pt_BR)
+- - Deterministic: Faker.seed(42), random.seed(42) — same data every run
+- - Bulk INSERT for performance, indexes created after seeding
+- - Industry domains: manufacturing, retail, logistics, chemicals, automotive, electronics, pharma
+- - Cross-server correlation: ~10% of legacy records have matching modern records (same company, matching tax IDs)
+- ### Auth
+- Bearer token per server. Configurable via environment variable. Must return 401 without valid token. Both servers enable CORS for the frontend origin.
+- 
+- ### Deployment
+- Deploy to Railway, Render, or Fly.io for public URLs accessible from Foundry. Each server needs its own URL and token. Foundry creates one Data Connection REST API source per server with an egress policy allowing outbound traffic.
+- 
+- -
+- 
+- ## Key Design Principles
+- 
+- 1. *The data quality gap IS the demo* — without messy legacy data and strict target validation, there's nothing for FloX to solve
+- 2. *Realistic enough for ERP consultants* — table names, field names, and data patterns should be recognizable to someone who's worked with SAP/Oracle/Dynamics
+- 3. *Profile-switchable* — same API contract, completely different data model underneath. "Watch us connect to Oracle instead of SAP — same tool, same workflow"
+- 4. *Three independent services* — just like real enterprise systems, no shortcuts, no shared state
+- 5. *Deterministic seeds* — demos must be reproducible
+- 6. *Frontend is window dressing* — exists for visual credibility, not functionality. FloX/Foundry is where the real work happens
