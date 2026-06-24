@@ -390,10 +390,8 @@ VITE_MODERN_TOKEN=changeme-modern
 ### Auth
 Bearer token per server from env var. Return `401` with `{"detail": "Unauthorized"}` if missing or invalid. Both servers enable CORS for all origins (`*`) — this is a demo environment, security is not a concern.
 
-### Deployment
-Deploy to Railway, Render, or Fly.io. Each server gets its own public URL + token. Foundry then creates:
-1. One REST API Data Connection source per server with the public URL + bearer token
-2. One network egress policy per hostname (port 443)
+### Deployment (TBC)
+
 
 ---
 
