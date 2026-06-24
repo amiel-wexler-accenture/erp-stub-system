@@ -80,6 +80,48 @@ docker compose up --build
 
 ---
 
+## Public Access (Cloudflare Tunnel)
+
+The legacy ERP is exposed publicly via Cloudflare Tunnel at:
+
+**`https://the-super-really-working-decho-erp.com`** → `localhost:8001`
+
+Start the tunnel (run alongside `docker compose up`):
+
+```bash
+cloudflared tunnel run erp-legacy
+```
+
+The tunnel must be running for Palantir Foundry and any external clients to reach the legacy ERP.
+
+### Foundry REST API Connector setup
+
+| Field | Value |
+|---|---|
+| Base URL | `https://the-super-really-working-decho-erp.com` |
+| Auth | Bearer token: `changeme-legacy` (set via `LEGACY_API_TOKEN`) |
+| Endpoint pattern | `/tables/{TABLE_NAME}/data` |
+| Pagination | Offset/limit — params: `limit`, `offset` |
+| Records path | `$.records` |
+| Incremental param | `since=<ISO timestamp>` |
+
+Test the public endpoint:
+
+```bash
+# Health check (no auth)
+curl https://the-super-really-working-decho-erp.com/health
+
+# System info
+curl -H "Authorization: Bearer changeme-legacy" \
+  https://the-super-really-working-decho-erp.com/system/info
+
+# LFA1 sample (5 rows)
+curl -H "Authorization: Bearer changeme-legacy" \
+  "https://the-super-really-working-decho-erp.com/tables/LFA1/data?limit=5"
+```
+
+---
+
 ## Quick API checks
 
 ```bash
