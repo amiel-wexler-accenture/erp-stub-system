@@ -1,0 +1,72 @@
+services:
+  legacy-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: legacy
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - legacy-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  modern-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: modern
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - modern-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  legacy-erp:
+    build: ./legacy-erp
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@legacy-db:5432/legacy
+      LEGACY_API_TOKEN: ${LEGACY_API_TOKEN:-changeme-legacy}
+    depends_on:
+      legacy-db:
+        condition: service_healthy
+
+  modern-erp:
+    build: ./modern-erp
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@modern-db:5432/modern
+      MODERN_API_TOKEN: ${MODERN_API_TOKEN:-changeme-modern}
+    depends_on:
+      modern-db:
+        condition: service_healthy
+
+  erp-admin-ui:
+    build:
+      context: ./erp-admin-ui
+      args:
+        VITE_LEGACY_API_URL: http://localhost:8001
+        VITE_LEGACY_TOKEN: ${LEGACY_API_TOKEN:-changeme-legacy}
+        VITE_MODERN_API_URL: http://localhost:8002
+        VITE_MODERN_TOKEN: ${MODERN_API_TOKEN:-changeme-modern}
+    ports:
+      - "3000:80"
+    depends_on:
+      - legacy-erp
+      - modern-erp
+
+volumes:
+  legacy-db-data:
+  modern-db-data:
