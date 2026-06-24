@@ -82,23 +82,45 @@ docker compose up --build
 
 ## Public Access (Cloudflare Tunnel)
 
-The legacy ERP is exposed publicly via Cloudflare Tunnel at:
+The legacy ERP is exposed publicly via Cloudflare Tunnel. Two modes:
 
-**`https://the-super-really-working-decho-erp.com`** → `localhost:8001`
+### Option A — Named tunnel with custom domain (stable URL)
 
-Start the tunnel (run alongside `docker compose up`):
+Named tunnel `erp-legacy` (ID: `25ead59b-d6db-4377-82a9-2d488d72ed65`) is configured to route to `localhost:8001`. The target domain is `the-super-really-working-decho-erp.com` — this domain must be **registered and using Cloudflare nameservers** for DNS to resolve.
+
+Once the domain is active, start with:
 
 ```bash
-cloudflared tunnel run erp-legacy
+cloudflared tunnel run --url http://localhost:8001 erp-legacy
 ```
 
-The tunnel must be running for Palantir Foundry and any external clients to reach the legacy ERP.
+Or create `~/.cloudflared/config.yml` to avoid the `--url` flag each time:
+
+```yaml
+tunnel: erp-legacy
+credentials-file: ~/.cloudflared/25ead59b-d6db-4377-82a9-2d488d72ed65.json
+
+ingress:
+  - hostname: the-super-really-working-decho-erp.com
+    service: http://localhost:8001
+  - service: http_status:404
+```
+
+### Option B — Quick tunnel (no domain needed, URL changes each run)
+
+```bash
+cloudflared tunnel --url http://localhost:8001
+```
+
+Cloudflare assigns a random `https://*.trycloudflare.com` URL printed in the logs. Use this for ad-hoc testing without registering a domain.
+
+---
 
 ### Foundry REST API Connector setup
 
 | Field | Value |
 |---|---|
-| Base URL | `https://the-super-really-working-decho-erp.com` |
+| Base URL | your public tunnel URL |
 | Auth | Bearer token: `changeme-legacy` (set via `LEGACY_API_TOKEN`) |
 | Endpoint pattern | `/tables/{TABLE_NAME}/data` |
 | Pagination | Offset/limit — params: `limit`, `offset` |
@@ -109,15 +131,13 @@ Test the public endpoint:
 
 ```bash
 # Health check (no auth)
-curl https://the-super-really-working-decho-erp.com/health
+curl https://<tunnel-url>/health
 
 # System info
-curl -H "Authorization: Bearer changeme-legacy" \
-  https://the-super-really-working-decho-erp.com/system/info
+curl -H "Authorization: Bearer changeme-legacy" https://<tunnel-url>/system/info
 
 # LFA1 sample (5 rows)
-curl -H "Authorization: Bearer changeme-legacy" \
-  "https://the-super-really-working-decho-erp.com/tables/LFA1/data?limit=5"
+curl -H "Authorization: Bearer changeme-legacy" "https://<tunnel-url>/tables/LFA1/data?limit=5"
 ```
 
 ---
