@@ -380,12 +380,24 @@ VITE_MODERN_API_URL=http://localhost:8002
 VITE_MODERN_TOKEN=changeme-modern
 ```
 
-### Seed Data
-- Faker with mixed locales: en_US, en_GB, de_DE, fr_FR, ja_JP, pt_BR
-- `Faker.seed(42)`, `random.seed(42)` — deterministic, same data every run
-- Bulk INSERT (not row-by-row) for performance, indexes created after seeding
-- Industry domains: manufacturing, retail, logistics, chemicals, automotive, electronics, pharma
-- Cross-server correlation: ~10% of legacy company names/tax IDs appear as existing BPs in modern server (tests upsert dedup)
+  ### Seed Data Architecture
+
+  The SAP ECC profile seed data lives in pre-generated CSV files, not inline Python:
+
+  - **Generated CSVs:** `legacy-erp/data/seed/*.csv` (20 files, ~55,700 rows, committed)
+  - **Source data:** `legacy-erp/data/source/datasphere-content-main/` (gitignored — SAP Datasphere bike industry sample content)
+  - **Generation script:** `legacy-erp/data/generate_seed.py` — run with `python3 generate_seed.py` from `legacy-erp/data/`; requires `pip install faker pandas`
+
+  All 10 data quality issues are baked into the CSVs at generation time. The `seed_data()` method in `sap_ecc.py` is a simple CSV loader (~12 lines); it does not generate data
+  inline.
+
+  **Encoding convention:** empty CSV cell = SQL NULL (the loader converts `""` → `None`); `"N/A"` string = the inconsistent-null placeholder (stored as-is).
+
+  **Note on EKPO row count:** target is 15,000 but actual is ~12,544 — filtered to only items whose SALESORDERID maps to an EKKO row (maintains FK integrity).
+
+  To regenerate CSVs after editing the source data or generation logic:
+  ```bash
+  cd legacy-erp/data && python3 generate_seed.py
 
 ### Auth
 Bearer token per server from env var. Return `401` with `{"detail": "Unauthorized"}` if missing or invalid. Both servers enable CORS for all origins (`*`) — this is a demo environment, security is not a concern.

@@ -2,5 +2,5 @@
 .superpowers/
 .env
 postman/cloudflare-tunnel-tests.postman_collection.json
-datasphere-content-main
+legacy-erp/data/source/
 .DS_Store

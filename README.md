@@ -31,7 +31,7 @@ LEGACY_API_TOKEN=changeme-legacy \
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-First startup seeds ~58,000 rows (takes ~30s). Subsequent starts are instant.
+First startup seeds ~55,700 rows from pre-generated CSVs (takes ~30s). Subsequent starts are instant.
 
 ---
 
@@ -139,6 +139,22 @@ curl -H "Authorization: Bearer changeme-legacy" https://<tunnel-url>/system/info
 # LFA1 sample (5 rows)
 curl -H "Authorization: Bearer changeme-legacy" "https://<tunnel-url>/tables/LFA1/data?limit=5"
 ```
+
+---
+
+## Seed Data
+
+Legacy ERP seed data is pre-generated as CSV files in `legacy-erp/data/seed/` (20 files, ~55,700 rows total). The data is anchored on real SAP Datasphere bike-industry content — the first rows of LFA1/KNA1 use real company names (Trek Cycle AG, G&M Bicycle, All For Bikes, etc.) and MARA uses real product codes (MZ-FG-C10, CM-FL-V00…). EKKO/EKPO are built from 5,166 real sales orders. All 10 SAP data quality issues are baked in (trailing spaces, mixed nulls, invalid codes, Unicode names, orphan FKs, etc.).
+
+**To regenerate the CSVs** (e.g. after updating source data):
+
+```bash
+cd legacy-erp/data
+pip install faker pandas   # dev-only deps
+python3 generate_seed.py
+```
+
+Source data lives in `legacy-erp/data/source/` (gitignored — copy of SAP Datasphere sample content).
 
 ---
 
