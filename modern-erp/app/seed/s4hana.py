@@ -1,15 +1,13 @@
 """
 S/4HANA seed data module for the modern ERP stub.
 
-Creates and seeds 19 tables deterministically (Faker.seed(42), random.seed(42)).
-All inserts are bulk in batches of 500 using SQLAlchemy Core.
+Reference tables are seeded from hardcoded constants.
+Domain tables are loaded from pre-generated CSVs in data/seed/.
 """
 
-from faker import Faker
-import random
-import uuid
-from datetime import date, timedelta
-from sqlalchemy import Table, Column, String, Integer, Numeric, MetaData, text
+import csv
+from pathlib import Path
+from sqlalchemy import Table, Column, String, Integer, MetaData
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 # ---------------------------------------------------------------------------
@@ -325,14 +323,24 @@ load_history = Table("load_history", metadata,
 
 BATCH_SIZE = 500
 
-def _fmt_date(d: date) -> str:
-    return d.isoformat()
+_CSV_DIR = Path(__file__).parent.parent.parent / "data" / "seed"
 
-def _random_date(fake: Faker, start_year: int = 2015, end_year: int = 2024) -> str:
-    start = date(start_year, 1, 1)
-    end = date(end_year, 12, 31)
-    delta = (end - start).days
-    return _fmt_date(start + timedelta(days=random.randint(0, delta)))
+_CSV_SEED_ORDER = [
+    ("BusinessPartner", bp),
+    ("BPRole", bp_role),
+    ("BPBankAccount", bp_bank),
+    ("BPAddress", bp_address),
+    ("BPCompanyCode", bp_company),
+    ("BPPurchasingOrg", bp_purch),
+    ("Product", product),
+    ("ProductPlant", product_plant),
+    ("ProductValuation", product_val),
+    ("GLAccount", gl_account),
+    ("CostCenter", cost_center),
+    ("ProfitCenter", profit_center),
+    ("PurchaseOrder", po),
+    ("PurchaseOrderItem", po_item),
+]
 
 async def _bulk_insert(conn, table, rows: list) -> None:
     if not rows:
@@ -355,309 +363,33 @@ async def drop_tables(engine: AsyncEngine) -> None:
 
 
 async def seed_data(engine: AsyncEngine) -> None:
-    fake = Faker(["en_US", "en_GB", "de_DE", "fr_FR", "ja_JP", "pt_BR"])
-    Faker.seed(42)
-    random.seed(42)
-
     async with engine.begin() as conn:
-
-        # ── Reference tables ────────────────────────────────────────────────
+        # ── Reference tables (hardcoded constants) ──────────────────────────
         await _bulk_insert(conn, country_ref,
             [{"code": c, "name": n} for c, n in COUNTRIES])
-
         await _bulk_insert(conn, currency,
             [{"code": c, "name": n} for c, n in CURRENCIES])
-
         await _bulk_insert(conn, uom,
             [{"code": c, "description": d} for c, d in UOMS])
-
         await _bulk_insert(conn, company_code,
             [{"code": c, "name": n, "country": co, "currency": cu}
              for c, n, co, cu in COMPANY_CODES])
-
         await _bulk_insert(conn, plant,
             [{"code": c, "name": n, "company_code": cc, "country": co}
              for c, n, cc, co in PLANTS])
-
         await _bulk_insert(conn, purch_org,
             [{"code": c, "name": n, "company_code": cc}
              for c, n, cc in PURCH_ORGS])
 
-        # ── BusinessPartner (300 rows) ──────────────────────────────────────
-        bp_rows = []
-        bp_numbers = []
-        bp_type_map = {}  # bp_number -> bp_type
-        for n in range(300):
-            bp_num = f"{n + 1:010d}"
-            bp_numbers.append(bp_num)
-            bp_t = random.choice(BP_TYPES)
-            bp_type_map[bp_num] = bp_t
-
-            # First 30 rows use legacy-overlap names
-            if n < 30:
-                name1 = LEGACY_OVERLAP_NAMES[n]
-                name2 = ""
-            else:
-                name1 = fake.company()
-                name2 = fake.company_suffix() if random.random() < 0.3 else ""
-
-            country = random.choice(COUNTRY_CODES)
-            cur = random.choice(CURRENCY_CODES)
-            lang = random.choice(["EN", "DE", "FR", "JA", "PT", "ZH"])
-            tax = fake.numerify("##-#######")
-            created = _random_date(fake)
-
-            bp_rows.append({
-                "BP_NUMBER": bp_num,
-                "bp_type": bp_t,
-                "NAME1": name1,
-                "NAME2": name2,
-                "COUNTRY": country,
-                "CURRENCY": cur,
-                "TAX_NUMBER": tax,
-                "LANGUAGE": lang,
-                "created_at": created,
-            })
-        await _bulk_insert(conn, bp, bp_rows)
-
-        # ── BPRole (~400 rows, 1-2 per BP) ─────────────────────────────────
-        role_rows = []
-        for bp_num in bp_numbers:
-            n_roles = random.randint(1, 2)
-            bt = bp_type_map[bp_num]
-            if bt == "VEND":
-                role_pool = ["FLVN01"]
-            elif bt == "CUST":
-                role_pool = ["FLCU01"]
-            else:
-                role_pool = ["FLVN01", "FLCU01"]
-
-            chosen_roles = random.sample(role_pool, min(n_roles, len(role_pool)))
-            vf = _random_date(fake, 2010, 2020)
-            vt = _random_date(fake, 2025, 2030)
-            for rc in chosen_roles:
-                role_rows.append({
-                    "BP_NUMBER": bp_num,
-                    "ROLE_CODE": rc,
-                    "VALID_FROM": vf,
-                    "VALID_TO": vt,
-                })
-        await _bulk_insert(conn, bp_role, role_rows)
-
-        # ── BPBankAccount (~200 rows, ~2/3 of BPs get a bank account) ──────
-        bank_rows = []
-        for bp_num in random.sample(bp_numbers, 200):
-            bk_country = random.choice(COUNTRY_CODES)
-            bk_key = fake.numerify("########")
-            bk_acct = fake.numerify("##################")
-            # Simple IBAN-style string (not cryptographically valid)
-            iban = f"{bk_country}{fake.numerify('##')}{fake.numerify('##################')}"
-            swift = fake.lexify("????????", letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ")[:8] + "XXX"
-            bank_rows.append({
-                "BP_NUMBER": bp_num,
-                "BANK_COUNTRY": bk_country,
-                "BANK_KEY": bk_key[:15],
-                "BANK_ACCOUNT": bk_acct[:18],
-                "IBAN": iban[:34],
-                "SWIFT": swift[:11],
-            })
-        await _bulk_insert(conn, bp_bank, bank_rows)
-
-        # ── BPAddress (300 rows, one per BP) ───────────────────────────────
-        addr_rows = []
-        for bp_num in bp_numbers:
-            addr_rows.append({
-                "BP_NUMBER": bp_num,
-                "STREET": fake.street_address()[:255],
-                "CITY": fake.city()[:255],
-                "POSTAL_CODE": fake.postcode()[:10],
-                "COUNTRY": random.choice(COUNTRY_CODES),
-                "REGION": fake.lexify("???", letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ")[:3],
-                "ADDR_TYPE": "01",
-            })
-        await _bulk_insert(conn, bp_address, addr_rows)
-
-        # ── BPCompanyCode (~250 rows) ───────────────────────────────────────
-        bpc_rows = []
-        for bp_num in random.sample(bp_numbers, 250):
-            cc = random.choice(COMPANY_CODE_KEYS)
-            bpc_rows.append({
-                "BP_NUMBER": bp_num,
-                "COMPANY_CODE": cc,
-                "RECONCILIATION_ACCOUNT": random.choice(RECON_ACCOUNTS),
-                "PAYMENT_TERMS": random.choice(PAYMENT_TERMS)[:4],
-                "CURRENCY": random.choice(CURRENCY_CODES),
-            })
-        await _bulk_insert(conn, bp_company, bpc_rows)
-
-        # ── BPPurchasingOrg (~200 rows, vendor BPs only) ───────────────────
-        vendor_bps = [n for n in bp_numbers if bp_type_map[n] in ("VEND", "BOTH")]
-        sample_vendors = random.sample(vendor_bps, min(200, len(vendor_bps)))
-        bpp_rows = []
-        for bp_num in sample_vendors:
-            bpp_rows.append({
-                "BP_NUMBER": bp_num,
-                "PURCH_ORG": random.choice(PURCH_ORG_CODES),
-                "INCOTERMS": random.choice(INCOTERMS)[:3],
-                "PAYMENT_TERMS": random.choice(PAYMENT_TERMS)[:4],
-                "CURRENCY": random.choice(CURRENCY_CODES),
-            })
-        await _bulk_insert(conn, bp_purch, bpp_rows)
-
-        # ── Product (200 rows) ─────────────────────────────────────────────
-        product_rows = []
-        product_numbers = []
-        for n in range(200):
-            pnum = f"P{n + 1:09d}"
-            product_numbers.append(pnum)
-            w = f"{random.uniform(0.1, 100):.3f}"
-            v = f"{random.uniform(0.01, 10):.4f}"
-            product_rows.append({
-                "PRODUCT_NUMBER": pnum,
-                "PRODUCT_TYPE": random.choice(PRODUCT_TYPES),
-                "BASE_UNIT": random.choice(UOM_CODES),
-                "WEIGHT": w,
-                "WEIGHT_UNIT": random.choice(["KG", "LB", "G"]),
-                "VOLUME": v,
-                "VOLUME_UNIT": random.choice(["L", "M3", "ML"]),
-                "PRODUCT_GROUP": random.choice(PRODUCT_GROUPS),
-                "DIVISION": random.choice(DIVISIONS),
-                "ERDAT": _random_date(fake, 2010, 2023),
-            })
-        await _bulk_insert(conn, product, product_rows)
-
-        # ── ProductPlant (~300 rows, 1-2 plants per product) ───────────────
-        pp_rows = []
-        for pnum in product_numbers:
-            n_plants = random.randint(1, 2)
-            chosen_plants = random.sample(PLANT_CODES, n_plants)
-            for plt in chosen_plants:
-                pp_rows.append({
-                    "PRODUCT_NUMBER": pnum,
-                    "PLANT": plt,
-                    "MRP_TYPE": random.choice(MRP_TYPES),
-                    "SAFETY_STOCK": str(random.randint(0, 500)),
-                    "REORDER_POINT": str(random.randint(0, 200)),
-                    "LOT_SIZE": random.choice(LOT_SIZES),
-                })
-        await _bulk_insert(conn, product_plant, pp_rows)
-
-        # ── ProductValuation (~200 rows, one per product) ──────────────────
-        pv_rows = []
-        for pnum in product_numbers:
-            val_area = random.choice(PLANT_CODES)
-            price = f"{random.uniform(1, 9999):.2f}"
-            pv_rows.append({
-                "PRODUCT_NUMBER": pnum,
-                "VALUATION_AREA": val_area,
-                "VALUATION_CLASS": random.choice(VALUATION_CLASSES),
-                "STANDARD_PRICE": price,
-                "PRICE_UNIT": "1",
-                "CURRENCY": random.choice(CURRENCY_CODES),
-            })
-        await _bulk_insert(conn, product_val, pv_rows)
-
-        # ── GLAccount (~80 rows) ────────────────────────────────────────────
-        gl_rows = []
-        gl_account_numbers = []
-        for n in range(80):
-            acct_num = f"{(n + 1) * 10000:010d}"
-            gl_account_numbers.append(acct_num)
-            acct_type = random.choice(ACCOUNT_TYPES)
-            descs = {
-                "A": "Asset Account",
-                "D": "Accounts Receivable",
-                "K": "Accounts Payable",
-                "M": "Material Account",
-                "S": "G/L Account",
-            }
-            desc = f"{descs[acct_type]} {n + 1:04d}"
-            gl_rows.append({
-                "ACCOUNT_NUMBER": acct_num,
-                "CHART_OF_ACCOUNTS": CHART_OF_ACCOUNTS,
-                "ACCOUNT_TYPE": acct_type,
-                "DESCRIPTION": desc,
-                "CREATED_AT": _random_date(fake, 2000, 2020),
-            })
-        await _bulk_insert(conn, gl_account, gl_rows)
-
-        # ── CostCenter (~60 rows) ───────────────────────────────────────────
-        cc_rows = []
-        cc_domains = ["Administration", "Finance", "IT", "HR", "Operations",
-                      "Sales", "Marketing", "R&D", "Logistics", "Procurement"]
-        for n in range(60):
-            cc_num = f"CC{n + 1:08d}"
-            domain = cc_domains[n % len(cc_domains)]
-            cc_rows.append({
-                "COST_CENTER": cc_num,
-                "CONTROLLING_AREA": CONTROLLING_AREA,
-                "COMPANY_CODE": random.choice(COMPANY_CODE_KEYS),
-                "DESCRIPTION": f"{domain} Cost Center {n + 1:03d}",
-                "VALID_FROM": _random_date(fake, 2000, 2015),
-                "VALID_TO": _random_date(fake, 2030, 2040),
-            })
-        await _bulk_insert(conn, cost_center, cc_rows)
-
-        # ── ProfitCenter (~40 rows) ─────────────────────────────────────────
-        pc_rows = []
-        segments = ["MFCT", "SERV", "DIST", "RETL", "CORP"]
-        for n in range(40):
-            pc_num = f"PC{n + 1:08d}"
-            seg = random.choice(segments)
-            pc_rows.append({
-                "PROFIT_CENTER": pc_num,
-                "CONTROLLING_AREA": CONTROLLING_AREA,
-                "DESCRIPTION": f"Profit Center {n + 1:03d} ({seg})",
-                "SEGMENT": seg,
-            })
-        await _bulk_insert(conn, profit_center, pc_rows)
-
-        # ── PurchaseOrder (~150 rows) ────────────────────────────────────────
-        # Only use vendor BPs for POs
-        available_vendors = vendor_bps[:150] if len(vendor_bps) >= 150 else vendor_bps
-        po_rows = []
-        po_numbers = []
-        for n in range(150):
-            po_num = f"PO{n + 1:08d}"
-            po_numbers.append(po_num)
-            vendor = available_vendors[n % len(available_vendors)]
-            cc = random.choice(COMPANY_CODE_KEYS)
-            # Match purch org to company code where possible
-            matching_pos = [p[0] for p in PURCH_ORGS if p[2] == cc]
-            chosen_po = random.choice(matching_pos) if matching_pos else random.choice(PURCH_ORG_CODES)
-            po_rows.append({
-                "PO_NUMBER": po_num,
-                "VENDOR": vendor,
-                "COMPANY_CODE": cc,
-                "PURCH_ORG": chosen_po,
-                "CURRENCY": random.choice(CURRENCY_CODES),
-                "DOCUMENT_DATE": _random_date(fake, 2022, 2024),
-                "STATUS": random.choice(PO_STATUSES),
-            })
-        await _bulk_insert(conn, po, po_rows)
-
-        # ── PurchaseOrderItem (~400 rows, 2-3 items per PO) ─────────────────
-        poi_rows = []
-        for po_num in po_numbers:
-            n_items = random.randint(2, 3)
-            for item_idx in range(n_items):
-                item_num = f"{(item_idx + 1) * 10:06d}"
-                prod = random.choice(product_numbers)
-                plt = random.choice(PLANT_CODES)
-                qty = f"{random.randint(1, 1000)}"
-                price = f"{random.uniform(1, 9999):.2f}"
-                poi_rows.append({
-                    "PO_NUMBER": po_num,
-                    "ITEM_NUMBER": item_num,
-                    "PRODUCT": prod,
-                    "PLANT": plt,
-                    "QUANTITY": qty,
-                    "UNIT": random.choice(UOM_CODES),
-                    "NET_PRICE": price,
-                    "CURRENCY": random.choice(CURRENCY_CODES),
-                    "DELIVERY_DATE": _random_date(fake, 2024, 2026),
-                })
-        await _bulk_insert(conn, po_item, poi_rows)
+        # ── Domain tables from CSVs ─────────────────────────────────────────
+        for table_name, table_obj in _CSV_SEED_ORDER:
+            csv_path = _CSV_DIR / f"{table_name}.csv"
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                rows = [
+                    {k: (v if v != "" else None) for k, v in row.items()}
+                    for row in csv.DictReader(f)
+                ]
+            await _bulk_insert(conn, table_obj, rows)
 
 
 # ---------------------------------------------------------------------------
@@ -669,7 +401,7 @@ _TABLE_META = [
     {
         "name": "BusinessPartner",
         "domain": "Business Partner",
-        "record_count": 300,
+        "record_count": 3806,
         "primary_keys": ["BP_NUMBER"],
         "load_supported": True,
         "validate_supported": True,
@@ -677,7 +409,7 @@ _TABLE_META = [
     {
         "name": "BPRole",
         "domain": "Business Partner",
-        "record_count": 400,
+        "record_count": 3806,
         "primary_keys": ["BP_NUMBER", "ROLE_CODE"],
         "load_supported": True,
         "validate_supported": True,
@@ -685,7 +417,7 @@ _TABLE_META = [
     {
         "name": "BPBankAccount",
         "domain": "Business Partner",
-        "record_count": 200,
+        "record_count": 3798,
         "primary_keys": ["BP_NUMBER", "BANK_COUNTRY", "BANK_KEY", "BANK_ACCOUNT"],
         "load_supported": True,
         "validate_supported": True,
@@ -693,7 +425,7 @@ _TABLE_META = [
     {
         "name": "BPAddress",
         "domain": "Business Partner",
-        "record_count": 300,
+        "record_count": 3806,
         "primary_keys": ["BP_NUMBER"],
         "load_supported": True,
         "validate_supported": True,
@@ -701,7 +433,7 @@ _TABLE_META = [
     {
         "name": "BPCompanyCode",
         "domain": "Business Partner",
-        "record_count": 250,
+        "record_count": 4498,
         "primary_keys": ["BP_NUMBER", "COMPANY_CODE"],
         "load_supported": True,
         "validate_supported": True,
@@ -709,7 +441,7 @@ _TABLE_META = [
     {
         "name": "BPPurchasingOrg",
         "domain": "Business Partner",
-        "record_count": 200,
+        "record_count": 2062,
         "primary_keys": ["BP_NUMBER", "PURCH_ORG"],
         "load_supported": True,
         "validate_supported": True,
@@ -717,7 +449,7 @@ _TABLE_META = [
     {
         "name": "Product",
         "domain": "Product",
-        "record_count": 200,
+        "record_count": 1991,
         "primary_keys": ["PRODUCT_NUMBER"],
         "load_supported": True,
         "validate_supported": True,
@@ -725,7 +457,7 @@ _TABLE_META = [
     {
         "name": "ProductPlant",
         "domain": "Product",
-        "record_count": 300,
+        "record_count": 4378,
         "primary_keys": ["PRODUCT_NUMBER", "PLANT"],
         "load_supported": True,
         "validate_supported": True,
@@ -733,7 +465,7 @@ _TABLE_META = [
     {
         "name": "ProductValuation",
         "domain": "Product",
-        "record_count": 200,
+        "record_count": 1991,
         "primary_keys": ["PRODUCT_NUMBER", "VALUATION_AREA"],
         "load_supported": True,
         "validate_supported": True,
@@ -741,7 +473,7 @@ _TABLE_META = [
     {
         "name": "GLAccount",
         "domain": "Finance",
-        "record_count": 80,
+        "record_count": 400,
         "primary_keys": ["ACCOUNT_NUMBER", "CHART_OF_ACCOUNTS"],
         "load_supported": True,
         "validate_supported": True,
@@ -749,7 +481,7 @@ _TABLE_META = [
     {
         "name": "CostCenter",
         "domain": "Finance",
-        "record_count": 60,
+        "record_count": 300,
         "primary_keys": ["COST_CENTER", "CONTROLLING_AREA"],
         "load_supported": True,
         "validate_supported": True,
@@ -765,7 +497,7 @@ _TABLE_META = [
     {
         "name": "PurchaseOrder",
         "domain": "Purchasing",
-        "record_count": 150,
+        "record_count": 3411,
         "primary_keys": ["PO_NUMBER"],
         "load_supported": True,
         "validate_supported": True,
@@ -773,7 +505,7 @@ _TABLE_META = [
     {
         "name": "PurchaseOrderItem",
         "domain": "Purchasing",
-        "record_count": 400,
+        "record_count": 11869,
         "primary_keys": ["PO_NUMBER", "ITEM_NUMBER"],
         "load_supported": True,
         "validate_supported": True,
