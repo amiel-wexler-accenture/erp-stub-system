@@ -403,33 +403,19 @@ VITE_MODERN_TOKEN=changeme-modern
 Bearer token per server from env var. Return `401` with `{"detail": "Unauthorized"}` if missing or invalid. Both servers enable CORS for all origins (`*`) — this is a demo environment, security is not a concern.
 
 
-### Deployment
-  
-  The legacy ERP is exposed publicly via Cloudflare Tunnel. No cloud
-  hosting — the tunnel proxies `localhost:8001` through Cloudflare's
-  edge.
+  ### Public Access (Tunnel)
 
-  **Domain:** `https://the-super-really-working-decho-erp.com` →
-  `localhost:8001`
+  Two options for exposing services to Palantir Foundry:
   
-  **To run the tunnel:**
+  **Tailscale Funnel (recommended)** — stable `*.ts.net` hostname, no
+  domain registration:
   ```bash
-  cloudflared tunnel run erp-legacy
+  tailscale funnel --https=443 8001    # legacy →
+  https://<machine>.ts.net
+  tailscale funnel --https=8443 8002   # modern →
+  https://<machine>.ts.net:8443
+  Machine hostname: amaklg9nw7125.tailb0e31b.ts.net
 
-  The tunnel must be active for Palantir Foundry to sync. The modern ERP
-  and admin UI remain localhost-only for now.
-
-  Foundry integration notes:
-  - Source system name "ECC-1" in /system/info matches the registered
-  source in Foundry's table registry
-  - Pagination: offset/limit via ?limit=500&offset=0, response envelope
-  {records, total, has_more}
-  - Incremental sync: ?since=<ISO timestamp> filters rows by
-  insert/update time
-  - Auth header: Authorization: Bearer <LEGACY_API_TOKEN>
-
-
----
 
 ## Key Design Principles
 

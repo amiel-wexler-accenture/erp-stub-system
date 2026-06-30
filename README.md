@@ -80,21 +80,39 @@ docker compose up --build
 
 ---
 
-## Public Access (Cloudflare Tunnel)
+## Public Access
 
-The legacy ERP is exposed publicly via Cloudflare Tunnel. Two modes:
+Two services need to be reachable by Palantir Foundry: legacy ERP (`:8001`) and modern ERP (`:8002`).
 
-### Option A — Named tunnel with custom domain (stable URL)
+### Option A — Tailscale Funnel (recommended — no domain registration needed)
 
-Named tunnel `erp-legacy` (ID: `25ead59b-d6db-4377-82a9-2d488d72ed65`) is configured to route to `localhost:8001`. The target domain is `the-super-really-working-decho-erp.com` — this domain must be **registered and using Cloudflare nameservers** for DNS to resolve.
+Requires Tailscale installed and Funnel enabled on your tailnet. Exposes both services on fixed HTTPS ports under your machine's stable `*.ts.net` hostname.
 
-Once the domain is active, start with:
+```bash
+tailscale funnel --https=443 8001    # legacy → https://<machine>.ts.net
+tailscale funnel --https=8443 8002   # modern → https://<machine>.ts.net:8443
+```
+
+Check status:
+```bash
+tailscale funnel status
+```
+
+To stop:
+```bash
+tailscale funnel --https=443 off
+tailscale funnel --https=8443 off
+```
+
+### Option B — Cloudflare named tunnel with custom domain (legacy ERP only)
+
+Named tunnel `erp-legacy` (ID: `25ead59b-d6db-4377-82a9-2d488d72ed65`) routes to `localhost:8001`. The domain `the-super-really-working-decho-erp.com` must be registered and using Cloudflare nameservers.
 
 ```bash
 cloudflared tunnel run --url http://localhost:8001 erp-legacy
 ```
 
-Or create `~/.cloudflared/config.yml` to avoid the `--url` flag each time:
+`~/.cloudflared/config.yml` for persistent config:
 
 ```yaml
 tunnel: erp-legacy
@@ -106,26 +124,37 @@ ingress:
   - service: http_status:404
 ```
 
-### Option B — Quick tunnel (no domain needed, URL changes each run)
+### Option C — Cloudflare quick tunnel (no domain, URL changes each run)
 
 ```bash
 cloudflared tunnel --url http://localhost:8001
 ```
 
-Cloudflare assigns a random `https://*.trycloudflare.com` URL printed in the logs. Use this for ad-hoc testing without registering a domain.
+Cloudflare prints a random `https://*.trycloudflare.com` URL in the logs.
 
 ---
 
 ### Foundry REST API Connector setup
 
+**Legacy ERP (ECC-1 source)**
+
 | Field | Value |
 |---|---|
-| Base URL | your public tunnel URL |
-| Auth | Bearer token: `changeme-legacy` (set via `LEGACY_API_TOKEN`) |
+| Base URL | your public tunnel URL for port 8001 |
+| Auth | Bearer token: `changeme-legacy` (env: `LEGACY_API_TOKEN`) |
 | Endpoint pattern | `/tables/{TABLE_NAME}/data` |
 | Pagination | Offset/limit — params: `limit`, `offset` |
 | Records path | `$.records` |
 | Incremental param | `since=<ISO timestamp>` |
+
+**Modern ERP (S/4HANA target)**
+
+| Field | Value |
+|---|---|
+| Base URL | your public tunnel URL for port 8002 |
+| Auth | Bearer token: `changeme-modern` (env: `MODERN_API_TOKEN`) |
+| Load endpoint | `POST /tables/{TABLE_NAME}/load` |
+| Validate endpoint | `POST /tables/{TABLE_NAME}/validate` |
 
 Test the public endpoint:
 
