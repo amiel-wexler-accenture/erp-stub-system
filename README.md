@@ -116,29 +116,67 @@ Cloudflare assigns a random `https://*.trycloudflare.com` URL printed in the log
 
 ---
 
-### Foundry REST API Connector setup
+## Foundry Pipeline
+
+Project: `accenture.palantirfoundry.com` → `/MigrationX-70fe4c/FloX/R&D/stub-erp`  
+Folder RID: `ri.compass.main.folder.4a90b88a-e209-4ef5-99a2-43a2d6b42dd5`
+
+---
+
+### Phase 1 — REST API Source
 
 | Field | Value |
 |---|---|
-| Base URL | your public tunnel URL |
-| Auth | Bearer token: `changeme-legacy` (set via `LEGACY_API_TOKEN`) |
+| Source name | SAP ECC Legacy REST API |
+| Source type | webhooks-rest |
+| Source RID | `ri.magritte..source.75a66f78-04c1-4d38-894d-80646630e10f` |
+| Auth | Bearer `changeme-legacy` |
 | Endpoint pattern | `/tables/{TABLE_NAME}/data` |
-| Pagination | Offset/limit — params: `limit`, `offset` |
-| Records path | `$.records` |
+| Pagination | offset/limit (`limit`, `offset` params), `$.records` path |
 | Incremental param | `since=<ISO timestamp>` |
 
-Test the public endpoint:
+> **Note:** Source connector URL must be updated whenever the public tunnel changes.
 
-```bash
-# Health check (no auth)
-curl https://<tunnel-url>/health
+---
 
-# System info
-curl -H "Authorization: Bearer changeme-legacy" https://<tunnel-url>/system/info
+### Phase 2 — Code Repository
 
-# LFA1 sample (5 rows)
-curl -H "Authorization: Bearer changeme-legacy" "https://<tunnel-url>/tables/LFA1/data?limit=5"
-```
+| Field | Value |
+|---|---|
+| Repo | sap-ecc-transforms |
+| Repo RID | `ri.stemma.main.repository.5178a62f-fc38-4bd6-afe8-ba9549018de7` |
+| Active branch | `ai-fde/awexlerdechoai/sap-ecc-pipeline-5R95fb` |
+| Open proposal | `ri.branch..proposal.daa62e2c-3929-44a5-bcc0-94e78adecd47` |
+| Raw datasets folder | `ri.compass.main.folder.6aaf70b2-bd0d-4511-97d2-92a7d50968ad` |
+| Clean datasets folder | `ri.compass.main.folder.33ef1919-940d-4333-a3ef-726af171463a` |
+
+---
+
+### Phase 4 — Raw Ingestion (20 tables)
+
+All 20 SAP ECC tables ingested as raw string datasets. Key decision: all columns declared as `StringType()` via explicit `StructType([StructField(col, StringType(), True)])` — required to avoid `CANNOT_DETERMINE_TYPE` errors on all-null columns.
+
+Tables: LFA1, LFB1, LFBK, LFAS, LFM1, LFM2, LFB5, LFBW, KNA1, KNB1, KNVV, KNBK, MARA, MARC, MAKT, SKA1, SKAT, CSKS, EKKO, EKPO.
+
+---
+
+### Phase 5 — DQ-Clean Transforms (14 datasets)
+
+PySpark transforms applied to each raw dataset. Standard rules across all tables:
+- Trim trailing spaces from all string columns
+- Normalize mixed nulls (`""`, `"N/A"` → `None`)
+- Standardize dates (`yyyyMMdd` / `dd.MM.yyyy` → ISO 8601)
+- Filter out `MANDT ≠ "100"` rows
+- Filter out `LOEVM = "X"` (blocked/deleted vendor records)
+
+Table-specific exceptions:
+- **LFB1**: `MANDT_OVERRIDE` column dropped before output
+- **LFB5**: `MANDT2` column dropped before output
+- **Purchasing**: EKKO inner-joined with LFA1 to remove orphan POs before joining EKPO
+
+Output datasets: `vendor_master_clean`, `LFBK_clean`, `LFAS_clean`, `LFM1_clean`, `LFM2_clean`, `LFB5_clean`, `LFBW_clean`, `customer_master_clean`, `KNVV_clean`, `KNBK_clean`, `material_master_clean`, `finance_clean`, `cost_centers_clean`, `purchasing_clean`.
+
+`transforms-external-systems` added to `conda_recipe/meta.yaml`.
 
 ---
 
