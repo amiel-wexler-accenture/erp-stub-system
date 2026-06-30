@@ -144,9 +144,11 @@ curl -H "Authorization: Bearer changeme-legacy" "https://<tunnel-url>/tables/LFA
 
 ## Seed Data
 
-Legacy ERP seed data is pre-generated as CSV files in `legacy-erp/data/seed/` (20 files, ~55,700 rows total). The data is anchored on real SAP Datasphere bike-industry content — the first rows of LFA1/KNA1 use real company names (Trek Cycle AG, G&M Bicycle, All For Bikes, etc.) and MARA uses real product codes (MZ-FG-C10, CM-FL-V00…). EKKO/EKPO are built from 5,166 real sales orders. All 10 SAP data quality issues are baked in (trailing spaces, mixed nulls, invalid codes, Unicode names, orphan FKs, etc.).
+**Legacy ERP** — pre-generated CSV files in `legacy-erp/data/seed/` (20 files, ~55,700 rows). Anchored on real SAP Datasphere bike-industry content (Trek Cycle AG, G&M Bicycle, real product codes, 5,166 sales orders). All 10 SAP data quality issues baked in.
 
-**To regenerate the CSVs** (e.g. after updating source data):
+**Modern ERP** — pre-generated CSV files in `modern-erp/data/seed/` (14 files, ~43,000 rows). Clean S/4HANA Business Partner model. Loaded from CSVs on first startup if the BusinessPartner table is empty.
+
+**To regenerate Legacy CSVs** (e.g. after updating source data):
 
 ```bash
 cd legacy-erp/data
@@ -178,8 +180,23 @@ curl -H "Authorization: Bearer changeme-legacy" "http://localhost:8001/tables/LF
 # Legacy: switch to Oracle EBS profile
 curl -X POST -H "Authorization: Bearer changeme-legacy" http://localhost:8001/config/profiles/oracle_ebs/activate
 
-# Modern: validate a record
+# Modern: validate a batch (dry-run, no insert)
 curl -X POST -H "Authorization: Bearer changeme-modern" -H "Content-Type: application/json" \
   -d '{"records": [{"BP_NUMBER": "0000000001", "bp_type": "VEND", "NAME1": "Test   "}]}' \
   http://localhost:8002/tables/BusinessPartner/validate
+
+# Modern: load records (upsert mode)
+curl -X POST -H "Authorization: Bearer changeme-modern" -H "Content-Type: application/json" \
+  -d '{"records": [{"BP_NUMBER": "0000001234", "bp_type": "VEND", "NAME1": "Acme", "COUNTRY": "US", "CURRENCY": "USD"}], "mode": "upsert", "on_error": "reject_record"}' \
+  http://localhost:8002/tables/BusinessPartner/load
+
+# Modern: check load batch status
+curl -H "Authorization: Bearer changeme-modern" \
+  http://localhost:8002/tables/BusinessPartner/load-status/<batch_id>
+
+# Modern: wipe all domain tables (keeps schema + reference data, useful for testing)
+curl -X POST -H "Authorization: Bearer changeme-modern" http://localhost:8002/admin/wipe
+
+# Modern: full reset (drop + recreate + reseed ~43k rows)
+curl -X POST -H "Authorization: Bearer changeme-modern" http://localhost:8002/admin/reset
 ```

@@ -440,3 +440,26 @@ Bearer token per server from env var. Return `401` with `{"detail": "Unauthorize
 5. *Deterministic seeds* — demos must be exactly reproducible
 6. *Frontend is window dressing* — FloX/Foundry is where the real work happens
 7. *System name matters* — `/system/info` must return `system_name: "ECC-1"` for SAP profile to match FloX's registered source config
+
+
+  ### Modern ERP Admin Endpoints
+
+  - `POST /admin/wipe` — truncates all 14 writable domain tables using TRUNCATE CASCADE,
+    leaving schema and reference tables (Country, Currency, UoM, CompanyCode, Plant,
+    PurchasingOrganization) intact. Use for test teardown between demo runs.
+  - `POST /admin/reset` — drops all tables, recreates schema, reseeds from CSVs (~43k rows).
+    Use when you need the full seed state restored.
+
+  ### Upsert Implementation
+
+  The load endpoint uses PostgreSQL `INSERT ... ON CONFLICT (...) DO UPDATE SET` with
+  `RETURNING (xmax = 0) AS was_inserted` to accurately count inserted vs. updated rows.
+  The conflict target is derived from `_PK_MAP` (built from `s4hana.get_tables()` at
+  module load time). update_only mode issues a real UPDATE and rejects if rowcount=0.
+
+  ### Validation Engine
+
+  `engine.py` is schema-driven: it reads `validation_rules` strings from
+  `s4hana.get_schema(table_name)` and applies rules (required, pattern, allowed_values,
+  iso_code, fk, string_hygiene, date_reasonableness) generically for all tables.
+  No per-table hardcoding.
