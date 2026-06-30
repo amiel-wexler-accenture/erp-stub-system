@@ -440,3 +440,28 @@ Bearer token per server from env var. Return `401` with `{"detail": "Unauthorize
 5. *Deterministic seeds* — demos must be exactly reproducible
 6. *Frontend is window dressing* — FloX/Foundry is where the real work happens
 7. *System name matters* — `/system/info` must return `system_name: "ECC-1"` for SAP profile to match FloX's registered source config
+
+
+#### Foundry Pipeline RIDs
+
+ - Project folder:
+ `ri.compass.main.folder.4a90b88a-e209-4ef5-99a2-43a2d6b42dd5`
+ - Source connector:
+
+     #### Foundry Pipeline RIDs
+
+     - Project folder:
+     `ri.compass.main.folder.4a90b88a-e209-4ef5-99a2-43a2d6b42dd5`
+     - Source connector:
+     `ri.magritte..source.75a66f78-04c1-4d38-894d-80646630e10f`
+     - Code repo (sap-ecc-transforms):
+     `ri.stemma.main.repository.5178a62f-fc38-4bd6-afe8-ba9549018de7`
+     - Active branch: `ai-fde/awexlerdechoai/sap-ecc-pipeline-5R95fb`
+     - Open proposal:
+     `ri.branch..proposal.daa62e2c-3929-44a5-bcc0-94e78adecd47`
+     - Raw datasets folder:
+     `ri.compass.main.folder.6aaf70b2-bd0d-4511-97d2-92a7d50968ad`
+     - Clean datasets folder:
+     `ri.compass.main.folder.33ef1919-940d-4333-a3ef-726af171463a`
+
+     Full pipeline documentation in README.md § Foundry Pipeline.
