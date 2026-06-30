@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from .. import db as db_module
 from ..auth import verify_token
@@ -6,10 +7,12 @@ from ..seed import s4hana
 
 router = APIRouter(tags=["admin"])
 
+_WIPEABLE_TABLES = [t["name"] for t in s4hana.get_tables() if t.get("load_supported")]
+
 
 @router.post("/admin/reset", dependencies=[Depends(verify_token)])
 async def reset_all():
-    """Truncate all tables and reseed."""
+    """Drop all tables, recreate schema, and reseed with default data."""
     try:
         await s4hana.drop_tables(db_module.engine)
         await s4hana.create_tables(db_module.engine)
@@ -17,6 +20,23 @@ async def reset_all():
         return {"message": "Database reset and reseeded successfully"}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@router.post("/admin/wipe", dependencies=[Depends(verify_token)])
+async def wipe_all():
+    """Truncate all writable domain tables, leaving schema and reference data intact."""
+    async with db_module.AsyncSessionLocal() as session:
+        try:
+            for table in reversed(_WIPEABLE_TABLES):
+                await session.execute(text(f'TRUNCATE TABLE "{table}" CASCADE'))
+            await session.commit()
+            return {
+                "message": "All domain tables wiped",
+                "tables_cleared": _WIPEABLE_TABLES,
+            }
+        except Exception as e:
+            await session.rollback()
+            raise HTTPException(500, str(e))
 
 
 @router.get("/config/profiles", dependencies=[Depends(verify_token)])
