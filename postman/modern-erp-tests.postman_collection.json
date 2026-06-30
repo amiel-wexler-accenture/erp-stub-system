@@ -1,0 +1,536 @@
+{
+  "info": {
+    "name": "ERP Stub — Modern ERP (S/4HANA)",
+    "description": "Tests for the modern ERP API at localhost:8002. Covers read, validate, load (upsert), and admin endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8002",
+      "type": "string"
+    },
+    {
+      "key": "modern_token",
+      "value": "changeme-modern",
+      "type": "string"
+    },
+    {
+      "key": "batch_id",
+      "value": "",
+      "type": "string",
+      "description": "Set automatically by the Load test"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Info",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health",
+            "description": "No auth required."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "System Info",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/system/info",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('system_name is S4H-1', () => pm.expect(j.system_name).to.eql('S4H-1'));",
+                  "pm.test('supports_validation true', () => pm.expect(j.supports_validation).to.be.true);",
+                  "pm.test('max_batch_size present', () => pm.expect(j.max_batch_size).to.be.a('number').and.above(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Read",
+      "item": [
+        {
+          "name": "List Tables",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/tables",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('returns array', () => pm.expect(j).to.be.an('array').with.length.above(0));",
+                  "pm.test('BusinessPartner present', () => pm.expect(j.map(t => t.name)).to.include('BusinessPartner'));",
+                  "pm.test('load_supported flag present', () => pm.expect(j[0]).to.have.property('load_supported'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BusinessPartner Schema",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/tables/BusinessPartner/schema",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('columns array present', () => pm.expect(j.columns).to.be.an('array').with.length.above(0));",
+                  "pm.test('BP_NUMBER column has validation_rules', () => {",
+                  "    const bp = j.columns.find(c => c.name === 'BP_NUMBER');",
+                  "    pm.expect(bp).to.exist;",
+                  "    pm.expect(bp.validation_rules).to.include('required');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BusinessPartner Count",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/tables/BusinessPartner/count",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('count is a number', () => pm.expect(pm.response.json().count).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BusinessPartner Data (5 rows)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/tables/BusinessPartner/data?limit=5",
+              "host": ["{{base_url}}"],
+              "path": ["tables", "BusinessPartner", "data"],
+              "query": [{ "key": "limit", "value": "5" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('records is array', () => pm.expect(j.records).to.be.an('array'));",
+                  "pm.test('has_more is boolean', () => pm.expect(j.has_more).to.be.a('boolean'));",
+                  "pm.test('BP_NUMBER present on first record', () => pm.expect(j.records[0]).to.have.property('BP_NUMBER'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Validate",
+      "item": [
+        {
+          "name": "Validate — valid BP record",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/BusinessPartner/validate",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"BP_NUMBER\": \"9999999901\", \"bp_type\": \"VEND\", \"NAME1\": \"Test Vendor\", \"COUNTRY\": \"US\", \"CURRENCY\": \"USD\"}]}"
+            },
+            "description": "Should pass all rules."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('batch_size is 1', () => pm.expect(j.batch_size).to.eql(1));",
+                  "pm.test('passed is 1', () => pm.expect(j.passed).to.eql(1));",
+                  "pm.test('failed is 0', () => pm.expect(j.failed).to.eql(0));",
+                  "pm.test('record status is PASS', () => pm.expect(j.records[0].status).to.eql('PASS'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validate — missing required fields",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/BusinessPartner/validate",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"BP_NUMBER\": \"\", \"bp_type\": \"VEND\"}]}"
+            },
+            "description": "Missing BP_NUMBER and NAME1 — should fail with required errors."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('failed is 1', () => pm.expect(j.failed).to.eql(1));",
+                  "pm.test('record status is FAIL', () => pm.expect(j.records[0].status).to.eql('FAIL'));",
+                  "const rules = j.records[0].errors.map(e => e.rule);",
+                  "pm.test('required rule fires', () => pm.expect(rules).to.include('required'));",
+                  "pm.test('by_rule.required is in summary', () => pm.expect(j.summary.by_rule).to.have.property('required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validate — bad pattern + bad iso_code",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/BusinessPartner/validate",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"BP_NUMBER\": \"ABC\", \"bp_type\": \"INVALID\", \"NAME1\": \"Bad Corp\", \"COUNTRY\": \"XX\", \"CURRENCY\": \"ZZZ\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('record fails', () => pm.expect(j.records[0].status).to.eql('FAIL'));",
+                  "const rules = j.records[0].errors.map(e => e.rule);",
+                  "pm.test('pattern error present', () => pm.expect(rules).to.include('pattern'));",
+                  "pm.test('allowed_values error present', () => pm.expect(rules).to.include('allowed_values'));",
+                  "pm.test('iso_code error present', () => pm.expect(rules).to.include('iso_code'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validate — PurchaseOrder required fields",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/PurchaseOrder/validate",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"PO_NUMBER\": \"\", \"CURRENCY\": \"USD\"}]}"
+            },
+            "description": "Non-BP table — schema-driven validation should catch missing PO_NUMBER and VENDOR."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('record fails', () => pm.expect(j.records[0].status).to.eql('FAIL'));",
+                  "const rules = j.records[0].errors.map(e => e.rule);",
+                  "pm.test('required error fires for non-BP table', () => pm.expect(rules).to.include('required'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Load",
+      "item": [
+        {
+          "name": "Load — upsert (insert new BP)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/BusinessPartner/load",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"BP_NUMBER\": \"9999999901\", \"bp_type\": \"VEND\", \"NAME1\": \"Test Vendor\", \"COUNTRY\": \"US\", \"CURRENCY\": \"USD\"}], \"mode\": \"upsert\", \"on_error\": \"reject_record\"}"
+            },
+            "description": "First run inserts; second run updates. batch_id saved for load-status test."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('batch_id present', () => pm.expect(j.batch_id).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('batch_id', j.batch_id);",
+                  "pm.test('inserted + updated = 1', () => pm.expect(j.inserted + j.updated).to.eql(1));",
+                  "pm.test('rejected is 0', () => pm.expect(j.rejected).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Load — upsert (update same BP, changed name)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/BusinessPartner/load",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"BP_NUMBER\": \"9999999901\", \"bp_type\": \"VEND\", \"NAME1\": \"Test Vendor UPDATED\", \"COUNTRY\": \"US\", \"CURRENCY\": \"USD\"}], \"mode\": \"upsert\", \"on_error\": \"reject_record\"}"
+            },
+            "description": "Same BP_NUMBER — should update the existing row. updated should be 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('updated is 1', () => pm.expect(j.updated).to.eql(1));",
+                  "pm.test('inserted is 0', () => pm.expect(j.inserted).to.eql(0));",
+                  "pm.test('rejected is 0', () => pm.expect(j.rejected).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Load — reject invalid record",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/BusinessPartner/load",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"BP_NUMBER\": \"BAD\", \"bp_type\": \"VEND\", \"NAME1\": \"Bad\"}], \"mode\": \"upsert\", \"on_error\": \"reject_record\"}"
+            },
+            "description": "Bad BP_NUMBER pattern — should be rejected."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('rejected is 1', () => pm.expect(j.rejected).to.eql(1));",
+                  "pm.test('inserted is 0', () => pm.expect(j.inserted).to.eql(0));",
+                  "pm.test('errors array non-empty', () => pm.expect(j.errors).to.be.an('array').with.length.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Load — update_only (non-existent → reject)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/tables/BusinessPartner/load",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{modern_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"records\": [{\"BP_NUMBER\": \"0000000000\", \"bp_type\": \"CUST\", \"NAME1\": \"Ghost Corp\", \"COUNTRY\": \"DE\", \"CURRENCY\": \"EUR\"}], \"mode\": \"update_only\", \"on_error\": \"reject_record\"}"
+            },
+            "description": "BP 0000000000 does not exist — update_only should reject it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('rejected is 1', () => pm.expect(j.rejected).to.eql(1));",
+                  "pm.test('updated is 0', () => pm.expect(j.updated).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Load History",
+      "item": [
+        {
+          "name": "Load Status (by batch_id)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/tables/BusinessPartner/load-status/{{batch_id}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }],
+            "description": "Uses batch_id set by the upsert test."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('batch_id matches', () => pm.expect(j.batch_id).to.eql(pm.collectionVariables.get('batch_id')));",
+                  "pm.test('status field present', () => pm.expect(j.status).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Load History",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/tables/BusinessPartner/load-history",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Wipe — clear all domain tables",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/admin/wipe",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }],
+            "description": "Truncates all 14 writable domain tables. Reference tables (Country, Currency, etc.) are preserved."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('message confirms wipe', () => pm.expect(j.message).to.include('wiped'));",
+                  "pm.test('tables_cleared is array', () => pm.expect(j.tables_cleared).to.be.an('array').with.length.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset — full reseed",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/admin/reset",
+            "header": [{ "key": "Authorization", "value": "Bearer {{modern_token}}" }],
+            "description": "Drops all tables, recreates schema, and reseeds from CSVs (~43k rows). Slow — use wipe for quick test teardown."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message confirms reset', () => pm.expect(pm.response.json().message).to.include('reseeded'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
