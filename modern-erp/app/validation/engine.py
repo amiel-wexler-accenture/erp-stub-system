@@ -2,8 +2,8 @@ import re
 from datetime import date, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from ..seed import s4hana
 
-# Known valid country codes (subset matching what's seeded in the Country table)
 VALID_COUNTRIES = {
     "US", "GB", "DE", "FR", "JP", "BR", "CN", "IN", "CA", "AU", "MX", "IT", "ES", "NL",
     "SE", "NO", "DK", "FI", "CH", "AT", "BE", "PL", "CZ", "PT", "RU", "ZA", "KR", "SG",
@@ -17,9 +17,15 @@ VALID_CURRENCIES = {
     "CLP", "COP", "SAR", "AED", "TRY", "THB",
 }
 
-VALID_BP_TYPES = {"VEND", "CUST", "BOTH"}
+_PK_MAP: dict[str, list[str]] = {t["name"]: t["primary_keys"] for t in s4hana.get_tables()}
 
-BP_NUMBER_PATTERN = re.compile(r"^[0-9]{10}$")
+_COMPILED_PATTERNS: dict[str, re.Pattern] = {}
+
+
+def _get_pattern(regex: str) -> re.Pattern:
+    if regex not in _COMPILED_PATTERNS:
+        _COMPILED_PATTERNS[regex] = re.compile(regex)
+    return _COMPILED_PATTERNS[regex]
 
 
 class ValidationEngine:
@@ -27,35 +33,20 @@ class ValidationEngine:
         self.session = session
 
     async def validate_batch(self, table_name: str, records: list[dict]) -> dict:
-        """
-        Validate a batch of records for the given table.
-        Returns a dict matching the ValidationResponse schema.
-        Does NOT insert data.
-        """
+        schema_cols = s4hana.get_schema(table_name)
+        pk_cols = _PK_MAP.get(table_name, [])
         results = []
 
         for idx, record in enumerate(records):
-            errors = []
-            warnings = []
-
-            if table_name == "BusinessPartner":
-                errors, warnings = await self._validate_business_partner(record, idx, records[:idx])
-            else:
-                # Generic validation for other tables: check string hygiene on all fields
-                errors, warnings = self._validate_generic(record)
-
+            errors, warnings = await self._validate_from_schema(
+                record, idx, records[:idx], schema_cols, pk_cols
+            )
             status = "FAIL" if errors else "PASS"
-            results.append({
-                "index": idx,
-                "status": status,
-                "errors": errors,
-                "warnings": warnings,
-            })
+            results.append({"index": idx, "status": status, "errors": errors, "warnings": warnings})
 
         passed = sum(1 for r in results if r["status"] == "PASS")
         failed = len(results) - passed
 
-        # Build summary aggregated across all errors and warnings
         by_rule: dict[str, int] = {}
         by_column: dict[str, int] = {}
         for r in results:
@@ -73,138 +64,100 @@ class ValidationEngine:
             "summary": {"by_rule": by_rule, "by_column": by_column},
         }
 
-    async def _validate_business_partner(
-        self, record: dict, idx: int, prior_records: list[dict]
+    async def _validate_from_schema(
+        self,
+        record: dict,
+        idx: int,
+        prior_records: list[dict],
+        schema_cols: list[dict],
+        pk_cols: list[str],
     ) -> tuple[list, list]:
-        errors = []
-        warnings = []
-
-        # 1. required — BP_NUMBER, bp_type, and NAME1 are required
-        for field in ["BP_NUMBER", "bp_type", "NAME1"]:
-            val = record.get(field)
-            if val is None or val == "":
-                errors.append({
-                    "rule": "required",
-                    "field": field,
-                    "message": f"{field} is required",
-                })
-
-        if errors:
-            # Short-circuit: further rules depend on these fields being present
-            return errors, warnings
-
-        bp_number = record.get("BP_NUMBER", "")
-        bp_type = record.get("bp_type", "")
-
-        # 2. pattern — BP_NUMBER must be exactly 10 digits
-        if not BP_NUMBER_PATTERN.match(bp_number):
-            errors.append({
-                "rule": "pattern",
-                "field": "BP_NUMBER",
-                "message": "BP_NUMBER must be exactly 10 digits",
-            })
-
-        # 3. allowed_values — bp_type must be VEND, CUST, or BOTH
-        if bp_type not in VALID_BP_TYPES:
-            errors.append({
-                "rule": "allowed_values",
-                "field": "bp_type",
-                "message": f"bp_type must be one of {sorted(VALID_BP_TYPES)}",
-            })
-
-        # 4. iso_code — COUNTRY and CURRENCY validated against known sets
-        country = record.get("COUNTRY")
-        if country and country not in VALID_COUNTRIES:
-            errors.append({
-                "rule": "iso_code",
-                "field": "COUNTRY",
-                "message": f"Unknown country code: {country}",
-            })
-
-        currency = record.get("CURRENCY")
-        if currency and currency not in VALID_CURRENCIES:
-            errors.append({
-                "rule": "iso_code",
-                "field": "CURRENCY",
-                "message": f"Unknown currency code: {currency}",
-            })
-
-        # 5. fk_integrity — check if BP_NUMBER already exists in the DB
-        #    (report as warning; load engine decides based on mode whether to upsert or reject)
-        bp_number_has_error = any(e["field"] == "BP_NUMBER" for e in errors)
-        if not bp_number_has_error:
-            try:
-                result = await self.session.execute(
-                    text('SELECT 1 FROM "BusinessPartner" WHERE "BP_NUMBER" = :bp LIMIT 1'),
-                    {"bp": bp_number},
-                )
-                existing = result.fetchone()
-                if existing:
-                    warnings.append({
-                        "rule": "fk_integrity",
-                        "field": "BP_NUMBER",
-                        "message": f"BP_NUMBER {bp_number} already exists (will upsert if mode=upsert)",
-                    })
-            except Exception:
-                # Table may not yet exist during testing; skip silently
-                pass
-
-        # 6. unique within batch — duplicate BP_NUMBER in the same submitted batch
-        for prior in prior_records:
-            if prior.get("BP_NUMBER") == bp_number:
-                errors.append({
-                    "rule": "unique",
-                    "field": "BP_NUMBER",
-                    "message": f"Duplicate BP_NUMBER in batch: {bp_number}",
-                })
-                break
-
-        # 7. string_hygiene — trailing spaces or control characters in name fields
-        for field in ["NAME1", "NAME2"]:
-            val = record.get(field)
-            if val and isinstance(val, str):
-                has_trailing = val != val.rstrip()
-                has_control = any(c in val for c in ["\x00", "\r", "\n", "\t"])
-                if has_trailing or has_control:
-                    warnings.append({
-                        "rule": "string_hygiene",
-                        "field": field,
-                        "message": f"{field} has trailing spaces or control characters",
-                    })
-
-        # 8. date_reasonableness — created_at must not be more than 1 year in the future
-        created_at = record.get("created_at")
-        if created_at:
-            try:
-                d = date.fromisoformat(str(created_at)[:10])
-                if d > date.today() + timedelta(days=365):
-                    warnings.append({
-                        "rule": "date_reasonableness",
-                        "field": "created_at",
-                        "message": "created_at is more than 1 year in the future",
-                    })
-            except (ValueError, TypeError):
-                pass
-
-        # 9. cross_field — bp_type=VEND should supply purchasing org data
-        if bp_type == "VEND" and not record.get("PURCH_ORG"):
-            warnings.append({
-                "rule": "cross_field",
-                "field": "PURCH_ORG",
-                "message": "bp_type=VEND but no PURCH_ORG provided",
-            })
-
-        return errors, warnings
-
-    def _validate_generic(self, record: dict) -> tuple[list, list]:
-        """Minimal validation for non-BusinessPartner tables: string hygiene only."""
         errors: list = []
         warnings: list = []
-        for field, val in record.items():
-            if val and isinstance(val, str) and val != val.rstrip():
-                warnings.append({
-                    "rule": "string_hygiene",
-                    "field": field,
-                    "message": f"{field} has trailing spaces",
-                })
+
+        for col_def in schema_cols:
+            field = col_def["name"]
+            val = record.get(field)
+            rules = col_def.get("validation_rules", [])
+
+            for rule in rules:
+                if rule == "required":
+                    if val is None or val == "":
+                        errors.append({"rule": "required", "field": field, "message": f"{field} is required"})
+
+                elif rule.startswith("pattern:"):
+                    regex = rule[len("pattern:"):]
+                    if val is not None and val != "" and not _get_pattern(regex).match(str(val)):
+                        errors.append({"rule": "pattern", "field": field, "message": f"{field} must match {regex}"})
+
+                elif rule.startswith("allowed_values:"):
+                    allowed = set(rule[len("allowed_values:"):].split(","))
+                    if val is not None and val != "" and val not in allowed:
+                        errors.append({
+                            "rule": "allowed_values",
+                            "field": field,
+                            "message": f"{field} must be one of {sorted(allowed)}",
+                        })
+
+                elif rule == "iso_code:country":
+                    if val and val not in VALID_COUNTRIES:
+                        errors.append({"rule": "iso_code", "field": field, "message": f"Unknown country code: {val}"})
+
+                elif rule == "iso_code:currency":
+                    if val and val not in VALID_CURRENCIES:
+                        errors.append({"rule": "iso_code", "field": field, "message": f"Unknown currency code: {val}"})
+
+                elif rule.startswith("fk:"):
+                    ref = rule[len("fk:"):]
+                    ref_table, ref_col = ref.split(".")
+                    if val:
+                        try:
+                            result = await self.session.execute(
+                                text(f'SELECT 1 FROM "{ref_table}" WHERE "{ref_col}" = :v LIMIT 1'),
+                                {"v": val},
+                            )
+                            if not result.fetchone():
+                                warnings.append({
+                                    "rule": "fk_integrity",
+                                    "field": field,
+                                    "message": f"{field}={val} not found in {ref_table}.{ref_col}",
+                                })
+                        except Exception:
+                            pass
+
+                elif rule == "string_hygiene":
+                    if val and isinstance(val, str):
+                        if val != val.rstrip() or any(c in val for c in ["\x00", "\r", "\n", "\t"]):
+                            warnings.append({
+                                "rule": "string_hygiene",
+                                "field": field,
+                                "message": f"{field} has trailing spaces or control characters",
+                            })
+
+                elif rule == "date_reasonableness":
+                    if val:
+                        try:
+                            d = date.fromisoformat(str(val)[:10])
+                            if d > date.today() + timedelta(days=365):
+                                warnings.append({
+                                    "rule": "date_reasonableness",
+                                    "field": field,
+                                    "message": f"{field} is more than 1 year in the future",
+                                })
+                        except (ValueError, TypeError):
+                            pass
+
+        # Within-batch duplicate PK check
+        if pk_cols and prior_records:
+            current_pk = tuple(record.get(c) for c in pk_cols)
+            for prior in prior_records:
+                if tuple(prior.get(c) for c in pk_cols) == current_pk:
+                    pk_desc = ", ".join(f"{c}={record.get(c)}" for c in pk_cols)
+                    errors.append({
+                        "rule": "unique",
+                        "field": pk_cols[0],
+                        "message": f"Duplicate PK in batch: {pk_desc}",
+                    })
+                    break
+
         return errors, warnings

@@ -3,4 +3,5 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN pip install -e .
 COPY app/ ./app/
+COPY data/ ./data/
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]

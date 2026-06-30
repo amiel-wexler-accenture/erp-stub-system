@@ -12,6 +12,8 @@ from ..seed import s4hana
 
 router = APIRouter(prefix="/tables", tags=["tables"])
 
+_PK_MAP: dict[str, list[str]] = {t["name"]: t["primary_keys"] for t in s4hana.get_tables()}
+
 
 @router.get("", dependencies=[Depends(verify_token)])
 async def list_tables():
@@ -107,6 +109,7 @@ async def load_records(
             cols = list(record.keys())
             col_str = ", ".join(f'"{c}"' for c in cols)
             val_str = ", ".join(f":{c}" for c in cols)
+            pk_cols = _PK_MAP.get(name, [])
 
             if mode == "insert":
                 await session.execute(
@@ -115,17 +118,49 @@ async def load_records(
                 )
                 inserted += 1
             elif mode == "upsert":
-                try:
-                    await session.execute(
-                        text(f'INSERT INTO "{name}" ({col_str}) VALUES ({val_str})'),
-                        record,
+                non_pk_cols = [c for c in cols if c not in pk_cols]
+                conflict_target = ", ".join(f'"{c}"' for c in pk_cols)
+                if non_pk_cols:
+                    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk_cols)
+                    # xmax=0 means the row was newly inserted; xmax!=0 means it was updated
+                    sql = (
+                        f'INSERT INTO "{name}" ({col_str}) VALUES ({val_str}) '
+                        f'ON CONFLICT ({conflict_target}) DO UPDATE SET {set_clause} '
+                        f'RETURNING (xmax = 0) AS was_inserted'
                     )
-                    inserted += 1
-                except Exception:
-                    # Record exists — count as updated
-                    await session.rollback()
-                    updated += 1
+                    result = await session.execute(text(sql), record)
+                    row = result.fetchone()
+                    if row and row[0]:
+                        inserted += 1
+                    else:
+                        updated += 1
+                else:
+                    # All columns are PKs — DO NOTHING; rowcount=0 means row already existed
+                    sql = (
+                        f'INSERT INTO "{name}" ({col_str}) VALUES ({val_str}) '
+                        f'ON CONFLICT ({conflict_target}) DO NOTHING'
+                    )
+                    result = await session.execute(text(sql), record)
+                    if result.rowcount == 0:
+                        updated += 1
+                    else:
+                        inserted += 1
             elif mode == "update_only":
+                non_pk_cols = [c for c in cols if c not in pk_cols]
+                if not non_pk_cols or not pk_cols:
+                    rejected += 1
+                    errors.append({"index": i, "message": "Cannot update: no non-PK columns or no PKs known"})
+                    continue
+                set_clause = ", ".join(f'"{c}" = :{c}' for c in non_pk_cols)
+                where_clause = " AND ".join(f'"{c}" = :{c}' for c in pk_cols)
+                result = await session.execute(
+                    text(f'UPDATE "{name}" SET {set_clause} WHERE {where_clause}'),
+                    record,
+                )
+                if result.rowcount == 0:
+                    rejected += 1
+                    errors.append({"index": i, "message": "Record not found for update_only"})
+                    continue
                 updated += 1
         except Exception as e:
             if on_error == "reject_batch":
